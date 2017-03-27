@@ -9,22 +9,93 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-## R Markdown
+## Practical Machine Learning Project
+This project uses the dataset provided here http://groupware.les.inf.puc-rio.br/har which provides movement data and classifications as to whether barbell lifts are being done correctly or incorrectly in 5 different ways. Variables based on motion taken from accelerometers on the belt, forearm, arm, and dumbell of 6 participants are used. The goal is to find a model that accurately predicts which of the 5 types of barbell lifts based on the movement data.
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+### Getting data
+Files are downloaded from website and read into the training and test variables and 
+```{r}
+# URLTraining <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+# URLTest <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+# download.file(URLTraining, destfile = "./trainingData.csv", method="curl")
+# download.file(URLTest, destfile = "./testData.csv", method="curl")
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
-
-```{r cars}
-summary(cars)
+training <- read.csv("trainingData.csv", na.strings = c("NA",""," ","#DIV/0!"))
+test <- read.csv("testData.csv", na.strings = c("NA",""," ","#DIV/0!"))
 ```
 
-## Including Plots
-
-You can also embed plots, for example:
-
-```{r pressure, echo=FALSE}
-plot(pressure)
+### Loading libraries
+Needed libraries are loaded
+```{r message=FALSE}
+library(ggplot2)
+library(caret)
+library(Hmisc)
+library(randomForest)
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+### Data cleaning
+A number of columns contained what appeared to be summary variables that summarized over a number of entries. These variables, therefore, consisted mostly of NAs, and so those columns with NAs were removed.  
+In addition, the first 7 rows were removed since they were not body position measurements (e.g. timestamp)  
+Finally, data points that were more than 5 standard deviations out were removed, with the assumption that this small number of outliers may be errors in the data that would have an outsized effect
+```{r}
+# remove columns with NAs
+training <- training[,!unlist(lapply(training, function(x) any(is.na(x))))]
+testing <- test[,!unlist(lapply(test, function(x) any(is.na(x))))]
+
+# remove variables that are not motion measurements
+training <- training[,8:60]
+testing <- testing[8:60]
+
+# find outliers
+findOutlier <- function(data, cutoff = 5) {
+    ## Calculate the sd
+    sds <- apply(data, 2, sd, na.rm = TRUE)
+    means <- apply(data,2,mean,na.rm=TRUE)
+    ## Identify the cells with value greater than cutoff * sd (column wise)
+    result <- mapply(function(d, s, m) {
+        which(d >  m + cutoff * s | d < m - cutoff*s)
+    }, data, sds, means)
+    result
+}
+# remove outliers 
+numOrig <- dim(training)[1]
+outliers <- unlist(findOutlier(training[-53]))
+while (length(outliers > 0)) {
+  training <- training[-outliers,]
+  outliers <- unlist(findOutlier(training[-53]))
+}
+## removed `r numOrig - dim(training)[1]` outliers
+```
+
+### Split the data into training and testing
+Split the training data set into training (70%) and testing (30%) for cross-validation
+Set the seed first for reproducibility
+```{r}
+set.seed(323)
+inTrain <- createDataPartition(y=training$classe, p = 0.7, list = FALSE)
+myTrain <- training[inTrain,]
+myTest <- training[-inTrain,]
+```
+
+### Fitting to models
+I tried fitting with random forest function that uses cross-validation
+The plot of the Mean Decrease Accuracy indicates that the 4 most important predictors were yaw_belt, roll_belt, pitch_belt, magnet_dumbbell_z. There is a some falloff after those variables, but the remaining variables still have an strong predictive value and the falloff is slow for the remainder of the variables.  
+Looking at feature plot of yaw_belt, roll_belt, pitch_belt with classe, you can see that they all appear to have some correlation with classe, but consistent with the slow falloff, none of the variables alone appears to be strongly predictive.
+```{r}
+mod_rf <- randomForest(classe~., data=myTrain, importance=TRUE, ntree=100)
+varImpPlot(mod_rf,type=1)
+featurePlot(x=myTrain[,c(1,2,3)],y=myTrain[,53])
+```
+
+### Model accuracy
+The random forest model accuracy is over 99% (out of sample error rate < 1%) so no further models were tested
+```{r}
+pred <- predict(mod_rf, myTest)
+confusionMatrix(pred, myTest$classe)
+```
+
+### Prediction of test set of 20
+Predict the output of the 20 entries in the test set
+```{r}
+predict(mod_rf, testing)
+```
